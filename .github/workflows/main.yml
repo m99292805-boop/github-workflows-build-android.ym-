@@ -1,0 +1,78 @@
+name: Build Android APK
+
+# يشتغل تلقائياً عند كل رفع (push) لفرع main، وكمان فيك تشغله يدوياً من تبويب Actions بأي وقت
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract project source (source.zip)
+        run: |
+          if [ ! -f source.zip ]; then
+            echo "::error::ملف source.zip مو موجود بجذر المستودع. ارفعه أول (Add file -> Upload files) قبل ما تشغّل الـ workflow."
+            exit 1
+          fi
+          unzip -o source.zip -d .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          # ملاحظة مهمة: cache:'npm' معطّل عمداً حالياً لأنه المشروع ما فيه package-lock.json بعد.
+          # cache:'npm' بدون lockfile بيخلي هاي الخطوة تفشل فوراً بخطأ "Dependencies lock file is not found".
+          # بعد أول مرة تشغّل npm install عندك محلياً وترفع ملف package-lock.json الناتج على GitHub،
+          # رجّع خيار cache:'npm' وبدّل خطوة "Install dependencies" تحت لتصير npm ci بدل npm install.
+
+      - name: Setup Java (مطلوب لبناء Android)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web app (Vite)
+        run: npm run build
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Generate app icons and splash screen
+        run: npx capacitor-assets generate --android
+
+      - name: Sync Capacitor with Android project
+        run: npx cap sync android
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      # نبني APK ونرفعه أول شي، قبل أي محاولة لبناء AAB — هيك حتى لو فشل بناء AAB
+      # (الخطوة التالية) بشكل غير متوقع، يضل الـ APK محفوظ وقابل للتنزيل ولا نخسره.
+      - name: Build Debug APK (جاهز للتثبيت المباشر بدون توقيع خاص)
+        run: cd android && ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clinic-management-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      # بدون continue-on-error عمداً: إذا فشل بناء AAB، الـ workflow لازم يظهر أحمر/فاشل بوضوح
+      # بدل ما يخفي المشكلة. لو نجح (الحالة الطبيعية حتى بدون توقيع)، بيكمل عادي لخطوة الرفع.
+      - name: Build Release AAB (بدون توقيع بعد — يحتاج توقيع قبل رفعه على Google Play)
+        run: cd android && ./gradlew bundleRelease --no-daemon
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clinic-management-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
